@@ -3,41 +3,40 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Commissioning Status Map (L1–L4 Presets + Fit to Screen)</title>
+  <title>Commissioning Status Map (Excel Upload + L1–L4 Presets)</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; }
     .layout { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
-    .topbar {
+    .topbar{
       flex: 0 0 auto;
       padding: 10px 12px;
-      background: #fff;
+      background:#fff;
       border-bottom: 1px solid #eee;
     }
     .bar-row { display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end; }
-    .group { border: 1px solid #ddd; border-radius: 10px; padding: 10px; background:#fff; }
-    label { display:block; font-size: 12px; color:#444; margin-bottom:6px; }
+    .group { border:1px solid #ddd; border-radius:10px; padding:10px; background:#fff; }
+    label { display:block; font-size:12px; color:#444; margin-bottom:6px; }
     input[type="file"] { width: 320px; max-width: 100%; }
-    select { padding: 8px; border: 1px solid #ccc; border-radius: 10px; background:#fff; }
-    button { padding: 9px 10px; border: 1px solid #ccc; border-radius: 10px; background:#fff; cursor:pointer; }
+    select { padding:8px; border:1px solid #ccc; border-radius:10px; background:#fff; }
+    button { padding:9px 10px; border:1px solid #ccc; border-radius:10px; background:#fff; cursor:pointer; }
     button:disabled { opacity:0.5; cursor:not-allowed; }
     .muted { color:#666; font-size:12px; line-height:1.35; }
-    .statuslog { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
+    .statuslog { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; white-space: pre-wrap; }
     .legend { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:6px; }
     .pill { display:flex; gap:6px; align-items:center; border:1px solid #e5e5e5; padding:4px 8px; border-radius:999px; font-size:12px; background:#fff; }
     .sw { width:10px; height:10px; border:1px solid #999; border-radius:2px; display:inline-block; }
 
+    /* Viewer: keep original SVG sizing (no forced fit), allow pan via scroll */
     #stage { flex: 1 1 auto; min-height: 0; background:#fafafa; }
-    #stageInner { height:100%; width:100%; padding: 10px; overflow:auto; }
+    #stageInner { height:100%; width:100%; padding:10px; overflow:auto; }
     #stageInner svg { display:block; }
 
-    @media (max-width: 720px) {
-      input[type="file"] { width: 100%; }
-    }
+    @media (max-width: 720px) { input[type="file"] { width: 100%; } }
     @media print {
       .topbar { display:none !important; }
-      body, .layout { height: auto; }
-      #stageInner { height:100%; width:100%; padding: 10px; overflow:auto; }
+      body, .layout { height:auto; }
+      #stageInner { padding:0; overflow:visible; }
     }
   </style>
 </head>
@@ -48,13 +47,13 @@
       <div class="group">
         <label>1) SVG overlay</label>
         <input id="svgFile" type="file" accept=".svg,image/svg+xml" />
-        <div class="muted">IDs in SVG must match your <b>Asset</b> column values.</div>
+        <div class="muted">SVG element <b>id</b> values must match your <b>Asset</b> column.</div>
       </div>
 
       <div class="group">
-        <label>2) Data file (CSV/XLSX)</label>
+        <label>2) Data file (CSV or Excel .xlsx)</label>
         <input id="dataFile" type="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
-        <div class="muted">Headers must be exactly <b>Asset</b> and <b>Status</b>.</div>
+        <div class="muted">Strict headers: <b>Asset</b> and <b>Status</b> (case-insensitive, whitespace trimmed).</div>
       </div>
 
       <div class="group">
@@ -138,9 +137,7 @@ let statusHeader = null;
 function log(msg){ els.log.textContent = msg + "\n" + els.log.textContent; }
 function norm(s){ return String(s ?? "").trim().toLowerCase(); }
 
-function getActiveMap(){
-  return (els.preset.value === "L4") ? MAP_L4_DEFAULT : MAP_L123;
-}
+function getActiveMap(){ return (els.preset.value === "L4") ? MAP_L4_DEFAULT : MAP_L123; }
 
 function renderLegend(){
   const map = getActiveMap();
@@ -148,7 +145,6 @@ function renderLegend(){
   const order = (els.preset.value === "L4")
     ? ["not started","in progress","pending verification","passed","failed"]
     : ["not started","in progress","ready for gc review","ready for qaqc review","failed - returned to contractor","finished"];
-
   order.forEach(k=>{
     const color = map[k];
     if (!color) return;
@@ -164,12 +160,13 @@ function renderLegend(){
     els.legend.appendChild(pill);
   });
 }
-
-els.preset.addEventListener("change", ()=>{
-  renderLegend();
-  log(`Preset changed to ${els.preset.value}.`);
-});
+els.preset.addEventListener("change", ()=>{ renderLegend(); log(`Preset changed to ${els.preset.value}.`); });
 renderLegend();
+
+function enableActions(){
+  const ok = !!(svgDoc && rows && rows.length && assetHeader && statusHeader);
+  els.applyBtn.disabled = !ok;
+}
 
 function downloadBlob(blob, filename){
   const url = URL.createObjectURL(blob);
@@ -230,6 +227,7 @@ function parseCSV(text){
   return rows;
 }
 
+/* ===== Excel support (Option 1): SheetJS via CDN ===== */
 async function ensureXLSXLibLoaded(){
   if(window.XLSX) return true;
   return new Promise((resolve)=>{
@@ -241,7 +239,7 @@ async function ensureXLSXLibLoaded(){
   });
 }
 
-function fitSvgForStage(svgEl){ /* disabled: keep original SVG sizing */ }
+/* ===== SVG helpers ===== */
 function applyColorToElement(el, color, labelText){
   el.setAttribute("fill", color);
   el.querySelectorAll("path, rect, circle, ellipse, polygon, polyline")
@@ -261,12 +259,7 @@ function serializeSVG(svgEl){
   return new XMLSerializer().serializeToString(clone);
 }
 
-function enableActions(){
-  const ok = !!(svgDoc && rows && rows.length && assetHeader && statusHeader);
-  els.applyBtn.disabled = !ok;
-}
-
-/* ===== Handlers ===== */
+/* ===== Load SVG overlay ===== */
 els.svgFile.addEventListener("change", async ()=>{
   const f = els.svgFile.files?.[0];
   if(!f) return;
@@ -274,24 +267,35 @@ els.svgFile.addEventListener("change", async ()=>{
     const txt = await fileToText(f);
     const doc = new DOMParser().parseFromString(txt,"image/svg+xml");
     const svg = doc.documentElement;
-    if(!svg || svg.nodeName.toLowerCase()!=="svg"){ log("❌ Not a valid SVG."); svgDoc=null; enableActions(); return; }
+    if(!svg || svg.nodeName.toLowerCase()!=="svg"){
+      log("❌ Not a valid SVG.");
+      svgDoc = null;
+      enableActions();
+      return;
+    }
     svg.querySelectorAll("script").forEach(s=>s.remove());
     if(!svg.getAttribute("xmlns")) svg.setAttribute("xmlns","http://www.w3.org/2000/svg");
-    svgDoc = svg;
-    fitSvgForStage(svgDoc);
+
+    svgDoc = svg; // keep original sizing
+
     els.stageInner.innerHTML = "";
     els.stageInner.appendChild(svgDoc);
-    log("✅ SVG loaded (fit to screen).");
+
+    log("✅ SVG loaded.");
     enableActions();
   } catch(e){
     log("❌ Failed to load SVG: " + (e?.message || e));
   }
 });
 
+/* ===== Load Data (CSV/XLSX) ===== */
 els.dataFile.addEventListener("change", async ()=>{
   const f = els.dataFile.files?.[0];
   if(!f) return;
-  rows=null; assetHeader=null; statusHeader=null; enableActions();
+
+  rows=null; assetHeader=null; statusHeader=null;
+  enableActions();
+
   const name = (f.name||"").toLowerCase();
   try{
     if(name.endsWith(".csv")){
@@ -299,24 +303,35 @@ els.dataFile.addEventListener("change", async ()=>{
       log(`✅ Loaded CSV. Rows: ${rows.length}`);
     } else if(name.endsWith(".xlsx")){
       const ok = await ensureXLSXLibLoaded();
-      if(!ok){ log("❌ XLSX parser blocked. Export CSV and load CSV instead."); return; }
+      if(!ok){
+        log("❌ Could not load Excel parser (CDN blocked). Export CSV and upload CSV instead.");
+        return;
+      }
       const wb = window.XLSX.read(await fileToArrayBuffer(f), {type:"array"});
       const ws = wb.Sheets[wb.SheetNames[0]];
       rows = window.XLSX.utils.sheet_to_json(ws, {defval:""});
-      log(`✅ Loaded XLSX. Rows: ${rows.length}`);
+      log(`✅ Loaded XLSX (sheet: "${wb.SheetNames[0]}"). Rows: ${rows.length}`);
     } else {
-      log("❌ Unsupported file type. Use CSV or XLSX."); return;
+      log("❌ Unsupported file type. Use CSV or XLSX.");
+      return;
     }
-    if(!rows || !rows.length){ log("⚠️ No data rows found."); return; }
+
+    if(!rows || !rows.length){
+      log("⚠️ No data rows found.");
+      return;
+    }
+
     const headers = Object.keys(rows[0] || {});
     const headerMap = new Map(headers.map(h=>[norm(h), h]));
     assetHeader = headerMap.get("asset") || null;
     statusHeader = headerMap.get("status") || null;
+
     if(!assetHeader || !statusHeader){
-      log("❌ Header check failed. File must contain headers exactly named 'Asset' and 'Status'.");
+      log("❌ Header check failed. File must contain headers named 'Asset' and 'Status' (case-insensitive).");
       log("Headers found: " + headers.join(", "));
       return;
     }
+
     log(`✅ Headers OK. Asset="${assetHeader}", Status="${statusHeader}"`);
     enableActions();
   } catch(e){
@@ -324,6 +339,7 @@ els.dataFile.addEventListener("change", async ()=>{
   }
 });
 
+/* ===== Apply colors ===== */
 els.applyBtn.addEventListener("click", ()=>{
   if(!svgDoc || !rows?.length || !assetHeader || !statusHeader) return;
 
@@ -333,11 +349,14 @@ els.applyBtn.addEventListener("click", ()=>{
   for(const r of rows){
     const id = String(r[assetHeader] ?? "").trim();
     if(!id) continue;
+
     const stRaw = String(r[statusHeader] ?? "").trim();
     const color = statusMap[norm(stRaw)];
     if(!color){ unknownStatus++; continue; }
+
     const el = svgDoc.querySelector("#" + CSS.escape(id));
     if(!el){ missingSvg++; continue; }
+
     applyColorToElement(el, color, `${id}: ${stRaw}`);
     matched++;
   }
@@ -348,33 +367,50 @@ els.applyBtn.addEventListener("click", ()=>{
   els.printBtn.disabled=false;
 });
 
+/* ===== Downloads ===== */
 els.downloadSvgBtn.addEventListener("click", ()=>{
   if(!svgDoc) return;
   downloadBlob(new Blob([serializeSVG(svgDoc)], {type:"image/svg+xml;charset=utf-8"}), "commissioning_status_map.svg");
 });
-
 els.printBtn.addEventListener("click", ()=> window.print());
+
+/* PNG export: ensure viewBox exists; if missing, derive from bbox */
+function ensureViewBox(svgEl){
+  if(svgEl.getAttribute("viewBox")) return true;
+  try{
+    const bb = svgEl.getBBox();
+    if (bb && isFinite(bb.width) && isFinite(bb.height) && bb.width > 0 && bb.height > 0){
+      svgEl.setAttribute("viewBox", `${bb.x} ${bb.y} ${bb.width} ${bb.height}`);
+      return true;
+    }
+  } catch(_) {}
+  const w = parseFloat(svgEl.getAttribute("width") || "0");
+  const h = parseFloat(svgEl.getAttribute("height") || "0");
+  if (w > 0 && h > 0){
+    svgEl.setAttribute("viewBox", `0 0 ${w} ${h}`);
+    return true;
+  }
+  return false;
+}
 
 els.downloadPngBtn.addEventListener("click", ()=>{
   if(!svgDoc) return;
   const scale = parseFloat(els.pngScale?.value || "4");
+
+  const ok = ensureViewBox(svgDoc);
+  if(!ok){
+    log("❌ PNG export needs a viewBox (or usable width/height). Re-export SVG with a viewBox from Figma.");
+    return;
+  }
 
   const svgText = serializeSVG(svgDoc);
   const url = URL.createObjectURL(new Blob([svgText], {type:"image/svg+xml;charset=utf-8"}));
   const img = new Image();
 
   img.onload = ()=>{
-    // Use SVG viewBox to define output size, but always draw the FULL image.
     const vb = svgDoc.getAttribute("viewBox");
-    let vbW, vbH;
-
-    if(vb){
-      const p = vb.split(/\s+/).map(Number);
-      vbW = p[2]; vbH = p[3];
-    } else {
-      vbW = img.naturalWidth;
-      vbH = img.naturalHeight;
-    }
+    const p = vb.split(/\s+/).map(Number);
+    const vbW = p[2], vbH = p[3];
 
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(vbW * scale);
@@ -384,7 +420,6 @@ els.downloadPngBtn.addEventListener("click", ()=>{
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
 
-    // Draw entire SVG scaled into canvas (no clipping)
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
     canvas.toBlob((pngBlob)=>{
