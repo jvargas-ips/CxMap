@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Commissioning Status Map (L1–L4 Presets + Fit to Screen)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; }
+    .layout { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+    .topbar {
+      flex: 0 0 auto;
+      padding: 10px 12px;
+      background: #fff;
+      border-bottom: 1px solid #eee;
+    }
+    .bar-row { display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end; }
+    .group { border: 1px solid #ddd; border-radius: 10px; padding: 10px; background:#fff; }
+    label { display:block; font-size: 12px; color:#444; margin-bottom:6px; }
+    input[type="file"] { width: 320px; max-width: 100%; }
+    select { padding: 8px; border: 1px solid #ccc; border-radius: 10px; background:#fff; }
+    button { padding: 9px 10px; border: 1px solid #ccc; border-radius: 10px; background:#fff; cursor:pointer; }
+    button:disabled { opacity:0.5; cursor:not-allowed; }
+    .muted { color:#666; font-size:12px; line-height:1.35; }
+    .statuslog { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; white-space: pre-wrap; }
+    .legend { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:6px; }
+    .pill { display:flex; gap:6px; align-items:center; border:1px solid #e5e5e5; padding:4px 8px; border-radius:999px; font-size:12px; background:#fff; }
+    .sw { width:10px; height:10px; border:1px solid #999; border-radius:2px; display:inline-block; }
+
+    #stage { flex: 1 1 auto; min-height: 0; background:#fafafa; }
+    #stageInner { height:100%; width:100%; padding: 10px; overflow:auto; }
+    #stageInner svg { display:block; }
+
+    @media (max-width: 720px) {
+      input[type="file"] { width: 100%; }
+    }
+    @media print {
+      .topbar { display:none !important; }
+      body, .layout { height: auto; }
+      #stageInner { height:100%; width:100%; padding: 10px; overflow:auto; }
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <div class="topbar">
+    <div class="bar-row">
+      <div class="group">
+        <label>1) SVG overlay</label>
+        <input id="svgFile" type="file" accept=".svg,image/svg+xml" />
+        <div class="muted">IDs in SVG must match your <b>Asset</b> column values.</div>
+      </div>
+
+      <div class="group">
+        <label>2) Data file (CSV/XLSX)</label>
+        <input id="dataFile" type="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+        <div class="muted">Headers must be exactly <b>Asset</b> and <b>Status</b>.</div>
+      </div>
+
+      <div class="group">
+        <label>Preset</label>
+        <select id="preset">
+          <option value="L1">L1</option>
+          <option value="L2">L2</option>
+          <option value="L3">L3</option>
+          <option value="L4" selected>L4</option>
+        </select>
+        <div class="muted">L1–L3 use GC/QAQC workflow statuses. L4 uses commissioning defaults.</div>
+      </div>
+
+      <div class="group">
+        <label>Actions</label>
+        <div class="bar-row" style="gap:8px; align-items:center;">
+          <button id="applyBtn" disabled>Apply Colors</button>
+          <button id="downloadSvgBtn" disabled>SVG</button>
+          <button id="downloadPngBtn" disabled>PNG</button>
+          <button id="printBtn" disabled>PDF</button>
+          <label style="margin-left:4px;">PNG</label>
+          <select id="pngScale">
+            <option value="2">2×</option>
+            <option value="4" selected>4×</option>
+            <option value="6">6×</option>
+            <option value="8">8×</option>
+          </select>
+        </div>
+        <div class="muted">Unknown statuses are left uncolored.</div>
+        <div id="legend" class="legend"></div>
+      </div>
+
+      <div class="group" style="flex:1; min-width:260px;">
+        <label>Log</label>
+        <div id="log" class="statuslog muted">Waiting for files…</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="stage"><div id="stageInner"></div></div>
+</div>
+
+<script>
+/* ===== Preset status maps ===== */
+const MAP_L123 = {
+  "not started": "#E74C3C",
+  "in progress": "#F1C40F",
+  "ready for gc review": "#2ECC71",
+  "ready for qaqc review": "#9B59B6",
+  "failed - returned to contractor": "#E74C3C",
+  "finished": "#2ECC71"
+};
+
+const MAP_L4_DEFAULT = {
+  "not started": "#BDBDBD",
+  "in progress": "#3498DB",
+  "pending verification": "#9B59B6",
+  "passed": "#2ECC71",
+  "failed": "#E74C3C"
+};
+
+const els = {
+  svgFile: document.getElementById("svgFile"),
+  dataFile: document.getElementById("dataFile"),
+  preset: document.getElementById("preset"),
+  applyBtn: document.getElementById("applyBtn"),
+  downloadSvgBtn: document.getElementById("downloadSvgBtn"),
+  downloadPngBtn: document.getElementById("downloadPngBtn"),
+  printBtn: document.getElementById("printBtn"),
+  pngScale: document.getElementById("pngScale"),
+  stageInner: document.getElementById("stageInner"),
+  log: document.getElementById("log"),
+  legend: document.getElementById("legend"),
+};
+
+let svgDoc = null;
+let rows = null;
+let assetHeader = null;
+let statusHeader = null;
+
+function log(msg){ els.log.textContent = msg + "\n" + els.log.textContent; }
+function norm(s){ return String(s ?? "").trim().toLowerCase(); }
+
+function getActiveMap(){
+  return (els.preset.value === "L4") ? MAP_L4_DEFAULT : MAP_L123;
+}
+
+function renderLegend(){
+  const map = getActiveMap();
+  els.legend.innerHTML = "";
+  const order = (els.preset.value === "L4")
+    ? ["not started","in progress","pending verification","passed","failed"]
+    : ["not started","in progress","ready for gc review","ready for qaqc review","failed - returned to contractor","finished"];
+
+  order.forEach(k=>{
+    const color = map[k];
+    if (!color) return;
+    const pill = document.createElement("div");
+    pill.className = "pill";
+    const sw = document.createElement("span");
+    sw.className = "sw";
+    sw.style.background = color;
+    const tx = document.createElement("span");
+    tx.textContent = k;
+    pill.appendChild(sw);
+    pill.appendChild(tx);
+    els.legend.appendChild(pill);
+  });
+}
+
+els.preset.addEventListener("change", ()=>{
+  renderLegend();
+  log(`Preset changed to ${els.preset.value}.`);
+});
+renderLegend();
+
+function downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function fileToText(file){
+  return new Promise((resolve,reject)=>{
+    const r = new FileReader();
+    r.onload = ()=> resolve(String(r.result||""));
+    r.onerror = ()=> reject(r.error || new Error("Failed to read file"));
+    r.readAsText(file);
+  });
+}
+function fileToArrayBuffer(file){
+  return new Promise((resolve,reject)=>{
+    const r = new FileReader();
+    r.onload = ()=> resolve(r.result);
+    r.onerror = ()=> reject(r.error || new Error("Failed to read file"));
+    r.readAsArrayBuffer(file);
+  });
+}
+
+/** Quote-aware CSV parser */
+function parseCSV(text){
+  const out = [];
+  let i=0, field="", row=[], inQuotes=false;
+  function endField(){ row.push(field); field=""; }
+  function endRow(){ out.push(row); row=[]; }
+  while(i<text.length){
+    const c=text[i];
+    if(inQuotes){
+      if(c==='"'){
+        if(text[i+1]==='"'){ field+='"'; i+=2; continue; }
+        inQuotes=false; i++; continue;
+      }
+      field+=c; i++; continue;
+    } else {
+      if(c==='"'){ inQuotes=true; i++; continue; }
+      if(c===','){ endField(); i++; continue; }
+      if(c==='\r'){ i++; continue; }
+      if(c==='\n'){ endField(); endRow(); i++; continue; }
+      field+=c; i++; continue;
+    }
+  }
+  endField(); if (!(row.length===1 && row[0]==="")) endRow();
+  if(out.length<2) return [];
+  const headers = out[0].map(h=>String(h||"").trim());
+  const rows = [];
+  for(let r=1;r<out.length;r++){
+    const obj = {};
+    for(let c=0;c<headers.length;c++) obj[headers[c]] = out[r][c] ?? "";
+    rows.push(obj);
+  }
+  return rows;
+}
+
+async function ensureXLSXLibLoaded(){
+  if(window.XLSX) return true;
+  return new Promise((resolve)=>{
+    const s=document.createElement("script");
+    s.src="https://cdn.jsdelivr.net/npm/xlsx@0.19.3/dist/xlsx.full.min.js";
+    s.onload=()=>resolve(!!window.XLSX);
+    s.onerror=()=>resolve(false);
+    document.head.appendChild(s);
+  });
+}
+
+function fitSvgForStage(svgEl){ /* disabled: keep original SVG sizing */ }
+function applyColorToElement(el, color, labelText){
+  el.setAttribute("fill", color);
+  el.querySelectorAll("path, rect, circle, ellipse, polygon, polyline")
+    .forEach(k=>k.setAttribute("fill", color));
+  let title = el.querySelector("title");
+  if(!title){
+    title = document.createElementNS("http://www.w3.org/2000/svg","title");
+    el.insertBefore(title, el.firstChild);
+  }
+  title.textContent = labelText || (el.getAttribute("id") || "asset");
+}
+
+function serializeSVG(svgEl){
+  const clone = svgEl.cloneNode(true);
+  if(!clone.getAttribute("xmlns")) clone.setAttribute("xmlns","http://www.w3.org/2000/svg");
+  if(!clone.getAttribute("xmlns:xlink")) clone.setAttribute("xmlns:xlink","http://www.w3.org/1999/xlink");
+  return new XMLSerializer().serializeToString(clone);
+}
+
+function enableActions(){
+  const ok = !!(svgDoc && rows && rows.length && assetHeader && statusHeader);
+  els.applyBtn.disabled = !ok;
+}
+
+/* ===== Handlers ===== */
+els.svgFile.addEventListener("change", async ()=>{
+  const f = els.svgFile.files?.[0];
+  if(!f) return;
+  try{
+    const txt = await fileToText(f);
+    const doc = new DOMParser().parseFromString(txt,"image/svg+xml");
+    const svg = doc.documentElement;
+    if(!svg || svg.nodeName.toLowerCase()!=="svg"){ log("❌ Not a valid SVG."); svgDoc=null; enableActions(); return; }
+    svg.querySelectorAll("script").forEach(s=>s.remove());
+    if(!svg.getAttribute("xmlns")) svg.setAttribute("xmlns","http://www.w3.org/2000/svg");
+    svgDoc = svg;
+    fitSvgForStage(svgDoc);
+    els.stageInner.innerHTML = "";
+    els.stageInner.appendChild(svgDoc);
+    log("✅ SVG loaded (fit to screen).");
+    enableActions();
+  } catch(e){
+    log("❌ Failed to load SVG: " + (e?.message || e));
+  }
+});
+
+els.dataFile.addEventListener("change", async ()=>{
+  const f = els.dataFile.files?.[0];
+  if(!f) return;
+  rows=null; assetHeader=null; statusHeader=null; enableActions();
+  const name = (f.name||"").toLowerCase();
+  try{
+    if(name.endsWith(".csv")){
+      rows = parseCSV(await fileToText(f));
+      log(`✅ Loaded CSV. Rows: ${rows.length}`);
+    } else if(name.endsWith(".xlsx")){
+      const ok = await ensureXLSXLibLoaded();
+      if(!ok){ log("❌ XLSX parser blocked. Export CSV and load CSV instead."); return; }
+      const wb = window.XLSX.read(await fileToArrayBuffer(f), {type:"array"});
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      rows = window.XLSX.utils.sheet_to_json(ws, {defval:""});
+      log(`✅ Loaded XLSX. Rows: ${rows.length}`);
+    } else {
+      log("❌ Unsupported file type. Use CSV or XLSX."); return;
+    }
+    if(!rows || !rows.length){ log("⚠️ No data rows found."); return; }
+    const headers = Object.keys(rows[0] || {});
+    const headerMap = new Map(headers.map(h=>[norm(h), h]));
+    assetHeader = headerMap.get("asset") || null;
+    statusHeader = headerMap.get("status") || null;
+    if(!assetHeader || !statusHeader){
+      log("❌ Header check failed. File must contain headers exactly named 'Asset' and 'Status'.");
+      log("Headers found: " + headers.join(", "));
+      return;
+    }
+    log(`✅ Headers OK. Asset="${assetHeader}", Status="${statusHeader}"`);
+    enableActions();
+  } catch(e){
+    log("❌ Failed to load data: " + (e?.message || e));
+  }
+});
+
+els.applyBtn.addEventListener("click", ()=>{
+  if(!svgDoc || !rows?.length || !assetHeader || !statusHeader) return;
+
+  const statusMap = getActiveMap();
+  let matched=0, missingSvg=0, unknownStatus=0;
+
+  for(const r of rows){
+    const id = String(r[assetHeader] ?? "").trim();
+    if(!id) continue;
+    const stRaw = String(r[statusHeader] ?? "").trim();
+    const color = statusMap[norm(stRaw)];
+    if(!color){ unknownStatus++; continue; }
+    const el = svgDoc.querySelector("#" + CSS.escape(id));
+    if(!el){ missingSvg++; continue; }
+    applyColorToElement(el, color, `${id}: ${stRaw}`);
+    matched++;
+  }
+
+  log(`✅ Applied colors (${els.preset.value}). Matched=${matched}, Missing SVG IDs=${missingSvg}, Unknown statuses=${unknownStatus}`);
+  els.downloadSvgBtn.disabled=false;
+  els.downloadPngBtn.disabled=false;
+  els.printBtn.disabled=false;
+});
+
+els.downloadSvgBtn.addEventListener("click", ()=>{
+  if(!svgDoc) return;
+  downloadBlob(new Blob([serializeSVG(svgDoc)], {type:"image/svg+xml;charset=utf-8"}), "commissioning_status_map.svg");
+});
+
+els.printBtn.addEventListener("click", ()=> window.print());
+
+els.downloadPngBtn.addEventListener("click", ()=>{
+  if(!svgDoc) return;
+  const scale = parseFloat(els.pngScale?.value || "4");
+
+  const svgText = serializeSVG(svgDoc);
+  const url = URL.createObjectURL(new Blob([svgText], {type:"image/svg+xml;charset=utf-8"}));
+  const img = new Image();
+
+  img.onload = ()=>{
+    // Use SVG viewBox to define output size, but always draw the FULL image.
+    const vb = svgDoc.getAttribute("viewBox");
+    let vbW, vbH;
+
+    if(vb){
+      const p = vb.split(/\s+/).map(Number);
+      vbW = p[2]; vbH = p[3];
+    } else {
+      vbW = img.naturalWidth;
+      vbH = img.naturalHeight;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(vbW * scale);
+    canvas.height = Math.round(vbH * scale);
+
+    const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+
+    // Draw entire SVG scaled into canvas (no clipping)
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    canvas.toBlob((pngBlob)=>{
+      if(!pngBlob){ log("❌ PNG export failed."); URL.revokeObjectURL(url); return; }
+      downloadBlob(pngBlob, "commissioning_status_map.png");
+      URL.revokeObjectURL(url);
+    }, "image/png");
+  };
+
+  img.onerror = ()=>{ log("❌ PNG export failed (decode error)."); URL.revokeObjectURL(url); };
+  img.src = url;
+});
+</script>
+</body>
+</html>
